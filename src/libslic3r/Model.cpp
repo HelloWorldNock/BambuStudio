@@ -2081,7 +2081,63 @@ bool ModelObject::has_connectors() const
     return false;
 }
 
-indexed_triangle_set ModelObject::get_connector_mesh(CutConnectorAttributes connector_attributes, CutConnectorParas para)
+// A prism whose top and bottom rims are bevelled inwards. chamfer_r is the rim inset relative
+// to r and chamfer_h the height of each bevel relative to h; both are clamped so the two bevels
+// can never meet. Vertex order and winding follow its_make_cylinder() / its_make_thread() so the
+// result behaves like any other connector mesh in the cut.
+static indexed_triangle_set make_chamfered_cylinder(double r, double h, double fa, double chamfer_r, double chamfer_h)
+{
+    indexed_triangle_set mesh;
+
+    const size_t n_steps    = std::max<size_t>(3, size_t(std::ceil(2. * PI / std::max(fa, 1e-6))));
+    const double angle_step = 2. * PI / double(n_steps);
+    const double cr         = std::clamp(chamfer_r, 0., 0.45);
+    const double ch         = std::clamp(chamfer_h, 0., 0.45);
+
+    // Four rings: bottom rim, lower shoulder, upper shoulder, top rim.
+    const double ring_z[4] = {0., ch * h, h - ch * h, h};
+    const double ring_r[4] = {r * (1. - cr), r, r, r * (1. - cr)};
+
+    auto &vertices = mesh.vertices;
+    auto &facets   = mesh.indices;
+    vertices.reserve(4 * n_steps + 2);
+    facets.reserve(6 * n_steps);
+
+    for (int ring = 0; ring < 4; ++ring)
+        for (size_t i = 0; i < n_steps; ++i) {
+            const double angle = angle_step * double(i);
+            vertices.emplace_back(Vec3f(float(ring_r[ring] * std::cos(angle)),
+                                        float(ring_r[ring] * std::sin(angle)),
+                                        float(ring_z[ring])));
+        }
+
+    // The three walls, including the two bevels.
+    for (int ring = 0; ring < 3; ++ring)
+        for (size_t i = 0; i < n_steps; ++i) {
+            const int next = int((i + 1) % n_steps);
+            const int v0   = ring * int(n_steps) + int(i);
+            const int v1   = ring * int(n_steps) + next;
+            const int v2   = (ring + 1) * int(n_steps) + int(i);
+            const int v3   = (ring + 1) * int(n_steps) + next;
+            facets.emplace_back(v0, v1, v2);
+            facets.emplace_back(v1, v3, v2);
+        }
+
+    const int bottom_center = int(vertices.size());
+    vertices.emplace_back(Vec3f(0.f, 0.f, 0.f));
+    const int top_center = int(vertices.size());
+    vertices.emplace_back(Vec3f(0.f, 0.f, float(h)));
+    for (size_t i = 0; i < n_steps; ++i) {
+        const int next = int((i + 1) % n_steps);
+        facets.emplace_back(bottom_center, next, int(i));
+        facets.emplace_back(top_center, 3 * int(n_steps) + int(i), 3 * int(n_steps) + next);
+    }
+
+    return mesh;
+}
+
+indexed_triangle_set ModelObject::get_connector_mesh(CutConnectorAttributes connector_attributes, CutConnectorParas para,
+                                                     double radius, double height)
 {
     indexed_triangle_set connector_mesh;
 
@@ -2113,8 +2169,15 @@ indexed_triangle_set ModelObject::get_connector_mesh(CutConnectorAttributes conn
     }
 
     // --- ORIGINAL LOGIC BELOW ---
-    else if(connector_attributes.style == CutConnectorStyle::Prizm)
-        connector_mesh = its_make_cylinder(1.0, 1.0, (2 * PI / sectorCount));
+    else if(connector_attributes.style == CutConnectorStyle::Prizm) {
+        // Only a prism shaped plug gets bevels; the other combinations keep their straight rims.
+        if (connector_attributes.type == CutConnectorType::Plug && para.chamfer > 0.f) {
+            const double cr = std::clamp(double(para.chamfer) / std::max(radius, 1e-3), 0., 0.45);
+            const double ch = std::clamp(double(para.chamfer) / std::max(height, 1e-3), 0., 0.45);
+            connector_mesh  = make_chamfered_cylinder(1.0, 1.0, (2 * PI / sectorCount), cr, ch);
+        } else
+            connector_mesh = its_make_cylinder(1.0, 1.0, (2 * PI / sectorCount));
+    }
     else if (connector_attributes.type == CutConnectorType::Plug)
         connector_mesh = its_make_cone(1.0, 1.0, (2 * PI / sectorCount));
     else
@@ -2132,7 +2195,7 @@ void ModelObject::apply_cut_connectors(const std::string &name)
 
     size_t connector_id = cut_id.connectors_cnt();
     for (const CutConnector &connector : cut_connectors) {
-        TriangleMesh mesh = TriangleMesh(get_connector_mesh(connector.attribs, connector.paras));
+        TriangleMesh mesh = TriangleMesh(get_connector_mesh(connector.attribs, connector.paras, connector.radius, connector.height));
         // Mesh will be centered when loading.
         ModelVolume *new_volume = add_volume(std::move(mesh), ModelVolumeType::NEGATIVE_VOLUME);
 
