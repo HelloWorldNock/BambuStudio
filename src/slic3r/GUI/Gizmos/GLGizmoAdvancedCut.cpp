@@ -833,11 +833,19 @@ void GLGizmoAdvancedCut::update_plate_normal_boundingbox_clipper(const Transform
 void GLGizmoAdvancedCut::on_update(const UpdateData& data)
 {
     // 1. GHOST LOGIC: Update position BEFORE the gatekeeper
+    m_grid_hover_valid = false;
     if (m_connectors_editing) {
         Vec3d pos;
         Vec3d pos_world;
         if (unproject_on_cut_plane(data.mouse_pos.cast<double>(), pos, pos_world)) {
             m_localized_cut_pos = pos_world;
+            // Keep the intersection under the cursor highlighted, otherwise locking a connector
+            // to a lattice that is finer than the connector itself is invisible to the user.
+            Vec3d snapped_world;
+            if (snap_to_connector_grid(pos_world, snapped_world)) {
+                m_grid_hover_pos   = snapped_world;
+                m_grid_hover_valid = true;
+            }
         }
     }
     if (m_hover_id < 0)
@@ -2098,6 +2106,58 @@ void GLGizmoAdvancedCut::render_connector_grid()
     wxGetApp().unbind_shader();
 
     glsafe(::glDepthFunc(GL_LESS));
+
+    render_grid_hover();
+}
+
+void GLGizmoAdvancedCut::render_grid_hover()
+{
+    if (!m_connectors_editing || !m_connector_grid_show || !m_connector_grid_snap || !m_grid_hover_valid)
+        return;
+    const auto &p_flat_shader = wxGetApp().get_shader("flat");
+    if (!p_flat_shader)
+        return;
+
+    if (!m_grid_hover_model.is_initialized()) {
+        GLModel::Geometry geo;
+        geo.format.type          = GLModel::PrimitiveType::Lines;
+        geo.format.vertex_layout = GLModel::Geometry::EVertexLayout::P3;
+
+        constexpr unsigned segments = 24;
+        for (unsigned i = 0; i < segments; ++i) {
+            const float angle = 2.f * float(PI) * float(i) / float(segments);
+            geo.add_vertex(Vec3f(std::cos(angle), std::sin(angle), 0.f));
+        }
+        for (unsigned i = 0; i < segments; ++i)
+            geo.add_line(i, (i + 1) % segments);
+
+        const unsigned cross = segments;
+        geo.add_vertex(Vec3f(-1.5f, 0.f, 0.f));
+        geo.add_vertex(Vec3f(1.5f, 0.f, 0.f));
+        geo.add_vertex(Vec3f(0.f, -1.5f, 0.f));
+        geo.add_vertex(Vec3f(0.f, 1.5f, 0.f));
+        geo.add_line(cross + 0, cross + 1);
+        geo.add_line(cross + 2, cross + 3);
+
+        m_grid_hover_model.init_from(std::move(geo));
+    }
+
+    const double     scale = std::max(0.8, double(m_connector_size) * 0.5);
+    Transform3d      model = Geometry::translation_transform(m_grid_hover_pos) * m_rotate_matrix;
+    model.scale(Vec3f(float(scale), float(scale), 1.f).cast<double>());
+
+    // The marker sits exactly on the cut face, so depth testing would let the face win.
+    glsafe(::glDisable(GL_DEPTH_TEST));
+    m_grid_hover_model.set_color({1.f, 0.82f, 0.15f, 1.f});
+
+    wxGetApp().bind_shader(p_flat_shader);
+    const Camera &camera = wxGetApp().plater()->get_camera();
+    p_flat_shader->set_uniform("projection_matrix", camera.get_projection_matrix());
+    p_flat_shader->set_uniform("view_model_matrix", camera.get_view_matrix() * model);
+    m_grid_hover_model.render_geometry();
+    wxGetApp().unbind_shader();
+
+    glsafe(::glEnable(GL_DEPTH_TEST));
 }
 
 bool GLGizmoAdvancedCut::snap_to_connector_grid(const Vec3d &point_world, Vec3d &snapped_world)
@@ -2220,8 +2280,8 @@ void GLGizmoAdvancedCut::init_connector_shapes()
         for (const CutConnectorStyle &style : {CutConnectorStyle::Frustum, CutConnectorStyle::Prizm})
             for (const CutConnectorShape &shape : {CutConnectorShape::Circle, CutConnectorShape::Hexagon, CutConnectorShape::Square, CutConnectorShape::Triangle}) {
                 CutConnectorAttributes     attribs = {type, style, shape};
-                CutConnectorParas          paras   = {m_snap_space_proportion, m_snap_bulge_proportion};
-                const indexed_triangle_set its     = ModelObject::get_connector_mesh(attribs, paras);
+                CutConnectorParas          paras   = {m_snap_space_proportion, m_snap_bulge_proportion, m_connector_chamfer};
+                const indexed_triangle_set its     = ModelObject::get_connector_mesh(attribs, paras, m_connector_size * 0.5, m_connector_depth_ratio);
                 m_shapes[attribs].init_from(its);
             }
 }
@@ -2251,9 +2311,11 @@ void GLGizmoAdvancedCut::reset_connectors()
 void GLGizmoAdvancedCut::update_connector_shape()//update mesh
 {
     CutConnectorAttributes attribs = { m_connector_type, CutConnectorStyle(m_connector_style), CutConnectorShape(m_connector_shape_id)};
-    CutConnectorParas       paras  = {m_snap_space_proportion, m_snap_bulge_proportion};
-    if (m_connector_type == CutConnectorType::Snap) {
-        indexed_triangle_set its = ModelObject::get_connector_mesh(attribs, paras);
+    CutConnectorParas       paras  = {m_snap_space_proportion, m_snap_bulge_proportion, m_connector_chamfer};
+    const bool is_chamfered_plug = m_connector_type == CutConnectorType::Plug &&
+                                   m_connector_style == size_t(CutConnectorStyle::Prizm) && m_connector_chamfer > 0.f;
+    if (m_connector_type == CutConnectorType::Snap || is_chamfered_plug) {
+        indexed_triangle_set its = ModelObject::get_connector_mesh(attribs, paras, m_connector_size * 0.5, m_connector_depth_ratio);
         m_shapes[attribs].reset();
         m_shapes[attribs].init_from(its);
     }
@@ -2350,6 +2412,7 @@ bool GLGizmoAdvancedCut::add_connector(CutConnectors &connectors, const Vec2d &m
 
         connectors.emplace_back(pos, m_rotate_matrix, m_connector_size * 0.5f, m_connector_depth_ratio, m_connector_size_tolerance, m_connector_depth_ratio_tolerance,
                                 CutConnectorAttributes(CutConnectorType(m_connector_type), CutConnectorStyle(m_connector_style), CutConnectorShape(m_connector_shape_id)));
+        connectors.back().paras.chamfer = m_connector_chamfer;
         m_selected.push_back(true);
         m_selected_count = 1;
         assert(m_selected.size() == connectors.size());
@@ -3512,19 +3575,37 @@ void GLGizmoAdvancedCut::render_connectors_input_window(float x, float y, float 
         m_imgui->bbl_checkbox(_L("Middle of geometry"), m_auto_center_connector);
         // ----------------------------------------
 
+        // --- CHAMFER (prism shaped plug only) ---
+        if (m_connector_type == CutConnectorType::Plug && m_connector_style == size_t(CutConnectorStyle::Prizm)) {
+            ImGui::AlignTextToFramePadding();
+            m_imgui->text(std::string("倒角"));
+            ImGui::SameLine(m_label_width);
+            ImGui::PushItemWidth(0.37 * m_editing_window_width);
+            float chamfer = m_connector_chamfer;
+            if (ImGui::BBLDragFloat("##connector_chamfer", &chamfer, 0.02f, 0.f, 2.f, "%.2f mm")) {
+                m_connector_chamfer = std::clamp(chamfer, 0.f, 2.f);
+                apply_selected_connectors([this, &connectors](size_t idx) { connectors[idx].paras.chamfer = m_connector_chamfer; });
+                update_connector_shape();
+            }
+            ImGui::PopItemWidth();
+        }
+        // ----------------------------------------
+
         // --- PLACEMENT GRID ---
         ImGui::Separator();
-        m_imgui->text_colored(ImGuiWrapper::COL_ORANGE_LIGHT, _L("Placement grid"));
-        m_imgui->bbl_checkbox(_L("Show grid on section"), m_connector_grid_show);
-        m_imgui->bbl_checkbox(_L("Snap to intersections"), m_connector_grid_snap);
+        m_imgui->text_colored(ImGuiWrapper::COL_ORANGE_LIGHT, std::string("连接件网格"));
+        m_imgui->bbl_checkbox(wxString::FromUTF8("在剖面上显示网格"), m_connector_grid_show);
+        m_imgui->bbl_checkbox(wxString::FromUTF8("吸附到网格交点"), m_connector_grid_snap);
         m_imgui->disabled_begin(!m_connector_grid_show);
         {
-            float spacing = float(m_connector_grid_spacing);
-            m_imgui->text(_L("Grid spacing") + ": ");
+            ImGui::AlignTextToFramePadding();
+            m_imgui->text(std::string("网格间距"));
             ImGui::SameLine(m_label_width);
-            ImGui::SetNextItemWidth(m_editing_window_width);
-            if (ImGui::InputFloat("##connector_grid_spacing", &spacing, 0.f, 0.f, "%.2f mm"))
+            ImGui::PushItemWidth(0.37 * m_editing_window_width);
+            float spacing = float(m_connector_grid_spacing);
+            if (ImGui::BBLDragFloat("##connector_grid_spacing", &spacing, 0.05f, 0.2f, 20.0f, "%.2f mm"))
                 m_connector_grid_spacing = std::clamp(double(spacing), 0.2, 20.0);
+            ImGui::PopItemWidth();
         }
         m_imgui->disabled_end();
         // ----------------------------------------
