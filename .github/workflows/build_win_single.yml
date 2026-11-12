@@ -1,6 +1,6 @@
 name: Build Windows (single)
 
-# Self-contained Windows x64 build: deps from source, app, portable zip.
+# Self-contained Windows x64 build: deps from source (cached), app, portable zip.
 # Kept free of reusable-workflow calls so it can be dispatched on any branch.
 on:
   workflow_dispatch:
@@ -25,7 +25,17 @@ jobs:
           choco install pkgconfiglite -y --no-progress
           choco install nsis -y --no-progress
 
+      # Building the deps takes most of the wall clock and they only change when deps/ does,
+      # so a cache hit turns a 2h45 run into a ~40 minute one.
+      - name: Restore deps
+        id: deps-cache
+        uses: actions/cache@v4
+        with:
+          path: deps\build\BambuStudio_dep
+          key: win64-deps-${{ hashFiles('deps/**') }}
+
       - name: Build deps
+        if: steps.deps-cache.outputs.cache-hit != 'true'
         working-directory: ${{ github.workspace }}
         run: |
           New-Item -ItemType Directory -Force -Path "${{ github.workspace }}\deps\build\BambuStudio_dep" | Out-Null
