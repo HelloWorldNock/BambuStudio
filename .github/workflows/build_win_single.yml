@@ -1,0 +1,16 @@
+name: Build Windows (single)
+
+# Builds the Windows x64 portable package of one branch, without the nine
+# entries the full "Build all" matrix would run. Dependencies are built from
+# source on the runner when there is no cache yet, which is the case for any
+# branch that has never been built here.
+on:
+  workflow_dispatch:
+
+jobs:
+  build_win:
+    name: Build Windows
+    uses: ./.github/workflows/build_check_cache.yml
+    with:
+      os: windows-latest
+      build-deps-only: false
