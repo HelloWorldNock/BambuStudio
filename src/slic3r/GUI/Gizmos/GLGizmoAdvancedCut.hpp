@@ -208,6 +208,13 @@ private:
     Vec2d      m_connector_grid_origin{Vec2d::Zero()};            // cut-plane 2D, millimetres
     ExPolygons m_connector_grid_section;                          // cut-plane 2D, millimetres
     GLModel    m_connector_grid_model;
+    // Nearest intersection to the cursor, so the snap target is visible before the click.
+    bool       m_grid_hover_valid{false};
+    Vec3d      m_grid_hover_pos{Vec3d::Zero()};
+    GLModel    m_grid_hover_model;
+    // Bevel of a prism shaped plug, in millimetres. Preview uses the value currently set in the
+    // panel; the geometry that ends up in the model uses each connector's own stored value.
+    float      m_connector_chamfer{0.f};
     // Cheap state the built grid was made from; a change means the grid has to be rebuilt.
     std::array<double, 16> m_connector_grid_key{};
     bool                  m_connector_grid_valid{false};
@@ -368,6 +375,8 @@ private:
     // Rebuilds the grid geometry when the plane, the section or the spacing changed.
     void  rebuild_connector_grid();
     void  render_connector_grid();
+    // Marks the intersection the cursor is currently locked to, so snapping is visible.
+    void  render_grid_hover();
     // Nearest intersection of the grid to a point on the cut plane. False when the grid is
     // off, absent, or when the intersection is outside the section.
     bool  snap_to_connector_grid(const Vec3d &point_world, Vec3d &snapped_world);
