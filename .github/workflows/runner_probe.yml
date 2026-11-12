@@ -1,0 +1,10 @@
+name: Runner probe
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    name: Probe ubuntu
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "runner is alive: ${{ runner.os }}"
