@@ -273,6 +273,9 @@ struct CutConnectorParas
 {
     float snap_space_proportion{0.3};
     float snap_bulge_proportion{0.15};
+    // Bevel applied to the top and bottom rim of a prism-shaped plug, in millimetres.
+    // 0 keeps the straight-edged prism the connector used to be.
+    float chamfer{0.f};
 };
 
 struct CutConnectorAttributes
@@ -498,7 +501,10 @@ public:
 
     bool                        is_cut() const { return cut_id.id().valid(); }
     bool                        has_connectors() const;
-    static indexed_triangle_set get_connector_mesh(CutConnectorAttributes connector_attributes, CutConnectorParas para);
+    // radius and height are only used to turn the absolute chamfer of para into the relative
+    // bevel the unit mesh can carry; the mesh itself stays unit sized and is scaled on use.
+    static indexed_triangle_set get_connector_mesh(CutConnectorAttributes connector_attributes, CutConnectorParas para,
+                                                   double radius = 1.0, double height = 1.0);
     void                        apply_cut_connectors(const std::string &name);
     // invalidate cut state for this object and its connectors/volumes
     void invalidate_cut();
