@@ -1,0 +1,63 @@
+name: Build Windows (single)
+
+# Self-contained Windows x64 build: deps from source, app, portable zip.
+# Kept free of reusable-workflow calls so it can be dispatched on any branch.
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: 'true'
+
+      - name: Setup MSVC
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Install build tools
+        run: |
+          choco install strawberryperl -y --no-progress
+          choco install pkgconfiglite -y --no-progress
+          choco install nsis -y --no-progress
+
+      - name: Build deps
+        working-directory: ${{ github.workspace }}
+        run: |
+          New-Item -ItemType Directory -Force -Path "${{ github.workspace }}\deps\build\BambuStudio_dep" | Out-Null
+          Set-Location "${{ github.workspace }}\deps\build"
+          cmake ../ -G "Visual Studio 18 2026" -A x64 -DDESTDIR="./BambuStudio_dep" -DCMAKE_BUILD_TYPE=Release -DDEP_DEBUG=OFF
+          if ($LASTEXITCODE -ne 0) { throw "cmake configure of deps failed" }
+          msbuild /m ALL_BUILD.vcxproj
+          if ($LASTEXITCODE -ne 0) { throw "build of deps failed" }
+        shell: pwsh
+
+      - name: Build BambuStudio
+        working-directory: ${{ github.workspace }}
+        run: |
+          New-Item -ItemType Directory -Force -Path "${{ github.workspace }}\build" | Out-Null
+          Set-Location "${{ github.workspace }}\build"
+          cmake .. -G "Visual Studio 18 2026" -A X64 `
+            -DBBL_RELEASE_TO_PUBLIC=1 -DBBL_INTERNAL_TESTING=0 `
+            -DCMAKE_PREFIX_PATH="${{ github.workspace }}\deps\build\BambuStudio_dep\usr\local" `
+            -DCMAKE_INSTALL_PREFIX="../install-dir" -DCMAKE_BUILD_TYPE=Release `
+            -DWIN10SDK_PATH="C:/Program Files (x86)/Windows Kits/10/Include/10.0.22000.0"
+          if ($LASTEXITCODE -ne 0) { throw "cmake configure of the app failed" }
+          cmake --build . --target install --config Release -- -m
+          if ($LASTEXITCODE -ne 0) { throw "build of the app failed" }
+        shell: pwsh
+
+      - name: Pack portable zip
+        shell: cmd
+        run: '"C:/Program Files/7-Zip/7z.exe" a -tzip BambuStudio_Windows_portable.zip "%GITHUB_WORKSPACE%\install-dir"'
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BambuStudio_Windows_portable
+          path: BambuStudio_Windows_portable.zip
+          if-no-files-found: error
