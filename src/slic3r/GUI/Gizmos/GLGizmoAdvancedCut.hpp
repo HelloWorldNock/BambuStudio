@@ -377,6 +377,9 @@ private:
     void  render_connector_grid();
     // Marks the intersection the cursor is currently locked to, so snapping is visible.
     void  render_grid_hover();
+    // Refreshes the hovered intersection from the cursor; called on every mouse move, because
+    // on_update() only runs while something is being dragged.
+    void  update_grid_hover(const Vec2d &mouse_position);
     // Nearest intersection of the grid to a point on the cut plane. False when the grid is
     // off, absent, or when the intersection is outside the section.
     bool  snap_to_connector_grid(const Vec3d &point_world, Vec3d &snapped_world);
