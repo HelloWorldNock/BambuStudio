@@ -833,19 +833,12 @@ void GLGizmoAdvancedCut::update_plate_normal_boundingbox_clipper(const Transform
 void GLGizmoAdvancedCut::on_update(const UpdateData& data)
 {
     // 1. GHOST LOGIC: Update position BEFORE the gatekeeper
-    m_grid_hover_valid = false;
+    update_grid_hover(data.mouse_pos.cast<double>());
     if (m_connectors_editing) {
         Vec3d pos;
         Vec3d pos_world;
         if (unproject_on_cut_plane(data.mouse_pos.cast<double>(), pos, pos_world)) {
             m_localized_cut_pos = pos_world;
-            // Keep the intersection under the cursor highlighted, otherwise locking a connector
-            // to a lattice that is finer than the connector itself is invisible to the user.
-            Vec3d snapped_world;
-            if (snap_to_connector_grid(pos_world, snapped_world)) {
-                m_grid_hover_pos   = snapped_world;
-                m_grid_hover_valid = true;
-            }
         }
     }
     if (m_hover_id < 0)
@@ -2110,6 +2103,25 @@ void GLGizmoAdvancedCut::render_connector_grid()
     render_grid_hover();
 }
 
+void GLGizmoAdvancedCut::update_grid_hover(const Vec2d &mouse_position)
+{
+    m_grid_hover_valid = false;
+    if (!m_connectors_editing || !m_connector_grid_snap || !m_c || !m_c->selection_info() || !m_c->object_clipper() ||
+        !m_c->object_clipper()->has_valid_contour())
+        return;
+
+    Vec3d pos;
+    Vec3d pos_world;
+    if (!unproject_on_cut_plane(mouse_position, pos, pos_world))
+        return;
+
+    Vec3d snapped_world;
+    if (snap_to_connector_grid(pos_world, snapped_world)) {
+        m_grid_hover_pos   = snapped_world;
+        m_grid_hover_valid = true;
+    }
+}
+
 void GLGizmoAdvancedCut::render_grid_hover()
 {
     if (!m_connectors_editing || !m_connector_grid_show || !m_connector_grid_snap || !m_grid_hover_valid)
@@ -2312,9 +2324,11 @@ void GLGizmoAdvancedCut::update_connector_shape()//update mesh
 {
     CutConnectorAttributes attribs = { m_connector_type, CutConnectorStyle(m_connector_style), CutConnectorShape(m_connector_shape_id)};
     CutConnectorParas       paras  = {m_snap_space_proportion, m_snap_bulge_proportion, m_connector_chamfer};
-    const bool is_chamfered_plug = m_connector_type == CutConnectorType::Plug &&
-                                   m_connector_style == size_t(CutConnectorStyle::Prizm) && m_connector_chamfer > 0.f;
-    if (m_connector_type == CutConnectorType::Snap || is_chamfered_plug) {
+    // A prism plug is rebuilt even for a chamfer of zero, otherwise turning the bevel back down
+    // to 0 would keep showing the mesh that was generated while it was still set.
+    const bool is_prism_plug = m_connector_type == CutConnectorType::Plug &&
+                               m_connector_style == size_t(CutConnectorStyle::Prizm);
+    if (m_connector_type == CutConnectorType::Snap || is_prism_plug) {
         indexed_triangle_set its = ModelObject::get_connector_mesh(attribs, paras, m_connector_size * 0.5, m_connector_depth_ratio);
         m_shapes[attribs].reset();
         m_shapes[attribs].init_from(its);
@@ -3908,6 +3922,7 @@ bool GLGizmoAdvancedCut::process_cut_line(SLAGizmoEventType action, const Vec2d 
                 }
             }
         } else if (action == SLAGizmoEventType::Moving) {
+            update_grid_hover(mouse_position);
             this->set_dirty();
         }
         return true;
