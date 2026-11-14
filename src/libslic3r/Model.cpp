@@ -2081,10 +2081,10 @@ bool ModelObject::has_connectors() const
     return false;
 }
 
-// A prism whose top and bottom rims are bevelled inwards. chamfer_r is the rim inset relative
-// to r and chamfer_h the height of each bevel relative to h; both are clamped so the two bevels
-// can never meet. Vertex order and winding follow its_make_cylinder() / its_make_thread() so the
-// result behaves like any other connector mesh in the cut.
+// A prism bevelled at the tip only. The rim that meets the cut plane stays square: a bevel
+// there turns the bore mouth into a knife edge, which is what made the cut leave broken faces.
+// chamfer_r is the tip inset relative to r, chamfer_h the bevel height relative to h.
+// Vertex order and winding follow its_make_cylinder(), the mesh the plain plugin uses.
 static indexed_triangle_set make_chamfered_cylinder(double r, double h, double fa, double chamfer_r, double chamfer_h)
 {
     indexed_triangle_set mesh;
@@ -2094,16 +2094,16 @@ static indexed_triangle_set make_chamfered_cylinder(double r, double h, double f
     const double cr         = std::clamp(chamfer_r, 0., 0.45);
     const double ch         = std::clamp(chamfer_h, 0., 0.45);
 
-    // Four rings: bottom rim, lower shoulder, upper shoulder, top rim.
-    const double ring_z[4] = {0., ch * h, h - ch * h, h};
-    const double ring_r[4] = {r * (1. - cr), r, r, r * (1. - cr)};
+    // Three rings: square mouth, shoulder, bevelled tip.
+    const double ring_z[3] = {0., (1. - ch) * h, h};
+    const double ring_r[3] = {r, r, r * (1. - cr)};
 
     auto &vertices = mesh.vertices;
     auto &facets   = mesh.indices;
-    vertices.reserve(4 * n_steps + 2);
-    facets.reserve(6 * n_steps);
+    vertices.reserve(3 * n_steps + 2);
+    facets.reserve(4 * n_steps);
 
-    for (int ring = 0; ring < 4; ++ring)
+    for (int ring = 0; ring < 3; ++ring)
         for (size_t i = 0; i < n_steps; ++i) {
             const double angle = angle_step * double(i);
             vertices.emplace_back(Vec3f(float(ring_r[ring] * std::cos(angle)),
@@ -2111,16 +2111,15 @@ static indexed_triangle_set make_chamfered_cylinder(double r, double h, double f
                                         float(ring_z[ring])));
         }
 
-    // The three walls, including the two bevels.
-    for (int ring = 0; ring < 3; ++ring)
+    for (int ring = 0; ring < 2; ++ring)
         for (size_t i = 0; i < n_steps; ++i) {
-            const int next = int((i + 1) % n_steps);
-            const int v0   = ring * int(n_steps) + int(i);
-            const int v1   = ring * int(n_steps) + next;
-            const int v2   = (ring + 1) * int(n_steps) + int(i);
-            const int v3   = (ring + 1) * int(n_steps) + next;
-            facets.emplace_back(v0, v1, v2);
-            facets.emplace_back(v1, v3, v2);
+            const int prev = int((i + n_steps - 1) % n_steps);
+            const int li   = ring * int(n_steps) + int(i);
+            const int lp   = ring * int(n_steps) + prev;
+            const int ui   = (ring + 1) * int(n_steps) + int(i);
+            const int up   = (ring + 1) * int(n_steps) + prev;
+            facets.emplace_back(ui, up, lp);
+            facets.emplace_back(ui, lp, li);
         }
 
     const int bottom_center = int(vertices.size());
@@ -2128,9 +2127,9 @@ static indexed_triangle_set make_chamfered_cylinder(double r, double h, double f
     const int top_center = int(vertices.size());
     vertices.emplace_back(Vec3f(0.f, 0.f, float(h)));
     for (size_t i = 0; i < n_steps; ++i) {
-        const int next = int((i + 1) % n_steps);
-        facets.emplace_back(bottom_center, next, int(i));
-        facets.emplace_back(top_center, 3 * int(n_steps) + int(i), 3 * int(n_steps) + next);
+        const int prev = int((i + n_steps - 1) % n_steps);
+        facets.emplace_back(bottom_center, int(i), prev);
+        facets.emplace_back(2 * int(n_steps) + int(i), top_center, 2 * int(n_steps) + prev);
     }
 
     return mesh;
