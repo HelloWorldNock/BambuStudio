@@ -26,10 +26,11 @@ jobs:
           choco install nsis -y --no-progress
 
       # Building the deps takes most of the wall clock and they only change when deps/ does,
-      # so a cache hit turns a 2h45 run into a ~40 minute one.
+      # so a cache hit turns a 2h45 run into a ~40 minute one. Restore and save are split on
+      # purpose: the save is a convenience, and losing it must not fail an otherwise good build.
       - name: Restore deps
         id: deps-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: deps\build\BambuStudio_dep
           key: win64-deps-${{ hashFiles('deps/**') }}
@@ -45,6 +46,14 @@ jobs:
           msbuild /m ALL_BUILD.vcxproj
           if ($LASTEXITCODE -ne 0) { throw "build of deps failed" }
         shell: pwsh
+
+      - name: Save deps
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: deps\build\BambuStudio_dep
+          key: win64-deps-${{ hashFiles('deps/**') }}
 
       - name: Build BambuStudio
         working-directory: ${{ github.workspace }}
